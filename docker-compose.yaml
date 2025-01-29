@@ -1,0 +1,70 @@
+version: "3.8"
+
+services:
+  mssql:
+    container_name: mssql
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    user: root
+    restart: always
+    environment:
+      ACCEPT_EULA: "Y"
+      SA_PASSWORD: "LocalPassword123!"
+    ports:
+      - 1433:1433
+    volumes:
+      - ./MDF:/var/opt/mssql/backup
+    networks:
+      - mdf_extractor
+    command:
+      - /bin/bash
+      - -c
+      - |
+
+        /opt/mssql/bin/sqlservr &
+        pid=$$!
+
+        echo "Waiting for SQL Server to be available"
+        /opt/mssql-tools18/bin/sqlcmd -C -l 30 -S localhost -h-1 -V1  -U sa -P LocalPassword123! -Q "SET NOCOUNT ON SELECT \"UP\" , @@servername"
+        is_up=$$?
+        while [ $$is_up -ne 0 ] ; do
+          echo -e $$(date)
+          /opt/mssql-tools18/bin/sqlcmd -C -l 30 -S localhost -h-1 -V1  -U sa -P LocalPassword123! -Q "SET NOCOUNT ON SELECT \"UP\" , @@servername"
+          is_up=$$?
+          sleep 5
+        done
+
+        echo "Preparing Database System"
+
+        mdf_file=$$(find "/var/opt/mssql/backup/" -type f -name "*.mdf" -print -quit)
+        ldf_file=$$(find "/var/opt/mssql/backup/" -type f -name "*.ldf" -print -quit)
+
+        echo $$mdf_file
+        echo $$ldf_file
+
+        if [ -e "$$mdf_file" ] && [ -e "$$ldf_file" ]; then
+          /opt/mssql-tools18/bin/sqlcmd -C -U sa -P LocalPassword123! -l 30 -e -Q "USE [master]; CREATE DATABASE [import_db] on (FILENAME = N'$$mdf_file'), (FILENAME = N'$$ldf_file') FOR ATTACH;"
+        elif [ -e "$$mdf_file" ] && [ ! -e "$$ldf_file" ]; then
+          /opt/mssql-tools18/bin/sqlcmd -C -U sa -P LocalPassword123! -l 30 -e -Q "USE [master]; CREATE DATABASE [import_db] on (FILENAME = N'$$mdf_file') FOR ATTACH;"
+        else
+          echo "No files found"
+        fi
+        echo "All scripts have been executed. Waiting for MS SQL (pid $$pid) to terminate."
+
+        wait $$pid
+  extract:
+    container_name: mdf_extractor
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - HOST=mssql
+      - DB=import_db
+      - DBUSER=sa
+      - DBPASSWORD=LocalPassword123!
+    volumes:
+      - ./CSV:/app/CSV
+    networks:
+      - mdf_extractor
+
+networks:
+  mdf_extractor:
